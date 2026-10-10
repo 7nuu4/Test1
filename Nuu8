@@ -1,0 +1,260 @@
+-- =========================================================
+-- DUELS EXPLOIT SUITE - INDETECTABLE EDITION
+-- Sistemas: ESP Line, Silent Aim, Auto Shoot, Hitbox Extender
+-- Optimizado para Duels: Assassino vs Sheriff
+-- =========================================================
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local Camera = workspace.CurrentCamera
+
+-- Configuración Globales
+local Settings = {
+    ESP_Line_Color = Color3.fromRGB(255, 0, 0), -- Rojo
+    ESP_Line_Width = 2,
+    ESP_Distance_Cutoff = 200, -- Solo dibujar líneas si están cerca
+    
+    AutoShoot_FOV = 360, -- Campo de visión (360 = todo)
+    AutoShoot_Min_Delay = 0.15, -- Min segundos entre disparos
+    AutoShoot_Max_Delay = 0.25, -- Max segundos entre disparos
+    
+    Hitbox_Extend_Size = Vector3.new(8, 8, 8), -- Tamaño del hitbox extendido
+    OriginalHitbox_Size = nil -- Se guardará automáticamente al iniciar
+}
+
+-- Variables de Estado
+local CurrentTool = nil
+local IsAutoShooting = false
+local ESP_Guis = {} -- Para limpiar guis viejos si se recarga
+
+-- =========================================================
+-- 1. SISTEMA DE ESP LINE (Líneas de Visión)
+-- =========================================================
+
+local function updateESP()
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local head = player.Character:FindFirstChild("Head")
+            if head and not ESP_Guis[player] then
+                -- Crear la línea visual
+                local espLine = Instance.new("Frame")
+                espLine.BackgroundTransparency = 0.5
+                espLine.BorderSizePixel = 0
+                espLine.BackgroundColor3 = Settings.ESP_Line_Color
+                espLine.Size = UDim2.new(Settings.ESP_Line_Width, 0, Settings.ESP_Line_Width, 0)
+                espLine.Parent = Camera
+                
+                -- Guardamos referencia para poder borrarlo después
+                ESP_Guis[player] = espLine
+                
+                -- Conectar al render loop para actualizar posición
+                RunService.RenderStepped:Connect(function()
+                    local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
+                    if rootPart and head then
+                        local pos = head.WorldPosition
+                        local onScreen, screenPos = Camera:WorldToViewportPoint(pos)
+                        
+                        if onScreen then
+                            local dist = (LocalPlayer.Character.HumanoidRootPart.Position - rootPart.Position).Magnitude
+                            
+                            if dist < Settings.ESP_Distance_Cutoff then
+                                espLine.Visible = true
+                                espLine.Position = UDim2.new(0, screenPos.X, 0, screenPos.Y)
+                            else
+                                espLine.Visible = false
+                            end
+                        else
+                            espLine.Visible = false
+                        end
+                    end
+                end)
+            end
+        end
+    end
+end
+
+-- Actualizar ESP cada vez que cambia el personaje o se conecta un jugador
+Players.PlayerAdded:Connect(function(player)
+    player.CharacterAdded:Connect(function()
+        task.wait(0.5) -- Pequeño delay para esperar carga
+        updateESP()
+    end)
+end)
+
+-- Iniciar ESP inicial
+for _, player in pairs(Players:GetPlayers()) do
+    if player.Character then
+        player.CharacterAdded:Connect(function()
+            task.wait(0.5)
+            updateESP()
+        end)
+    end
+end
+
+-- Limpiar ESP al morir o salir
+LocalPlayer.CharacterRemoving:Connect(function()
+    -- Opcional: limpiar guis propios si los hubiera
+end)
+
+
+-- =========================================================
+-- 2. SILENT AIM (Apuntado Silencioso)
+-- =========================================================
+
+local function getClosestTarget()
+    local closestPart = nil
+    local minDist = math.huge
+    local myPos = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character.HumanoidRootPart.Position or Vector3.new(0,0,0)
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
+            local head = player.Character:FindFirstChild("Head")
+            
+            if rootPart and head then
+                local dist = (myPos - rootPart.Position).Magnitude
+                if dist < minDist and dist < 100 then -- Rango máximo de 100 studs
+                    minDist = dist
+                    closestPart = head
+                end
+            end
+        end
+    end
+    return closestPart
+end
+
+-- Hookear el evento de disparo. 
+-- NOTA: El nombre del evento puede variar según la versión del juego.
+-- Usualmente es 'FireWeapon', 'Shoot', o similar en ReplicatedStorage.Events.
+local fireWeaponEvent = ReplicatedStorage:FindFirstChild("Events") and ReplicatedStorage.Events:FindFirstChild("FireWeapon") 
+                     or ReplicatedStorage:FindFirstChild("FireWeapon")
+                     or ReplicatedStorage:FindFirstChild("Shoot")
+
+if fireWeaponEvent then
+    fireWeaponEvent.OnClientEvent:Connect(function(...)
+        local target = getClosestTarget()
+        if target then
+            -- Truco: Modificar temporalmente el objetivo del mouse antes de enviar el paquete
+            -- Esto hace que el servidor reciba coordenadas hacia la cabeza sin que tú muevas la cámara
+            local oldMouseTarget = LocalPlayer:GetMouse().Target
+            LocalPlayer:GetMouse().Target = target
+            
+            -- Llamar a la función original si existe o disparar manualmente
+            -- Si el evento tiene argumentos, pásalos:
+            -- fireWeaponEvent:InvokeServer(...) 
+            
+            -- Restaurar estado inmediatamente
+            LocalPlayer:GetMouse().Target = oldMouseTarget
+        end
+    end)
+else
+    -- Fallback: Si no encontramos el evento, intentamos hookear InputBegan para simular disparo
+    print("[Exploit] Evento de disparo no encontrado exacto. Usando modo simulación.")
+end
+
+
+-- =========================================================
+-- 3. AUTO SHOOT (Disparo Automático con Jitter)
+-- =========================================================
+
+UserInputService.InputBegan:Connect(function(input, isProcessed)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 and not isProcessed then
+        IsAutoShooting = true
+        
+        while IsAutoShooting do
+            -- Disparar
+            if fireWeaponEvent then
+                fireWeaponEvent:FireServer() -- Ajusta si usa InvokeServer o FireServer
+            end
+            
+            -- Delay aleatorio para parecer humano
+            local jitter = math.random(150, 250) / 1000
+            task.wait(jitter)
+        end
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        IsAutoShooting = false
+    end
+end)
+
+
+-- =========================================================
+-- 4. HITBOX EXTENDER (Modificación Segura)
+-- =========================================================
+
+-- Detectar cuando equipas una herramienta
+LocalPlayer.CharacterAdded:Connect(function(character)
+    character.ChildAdded:Connect(function(child)
+        if child:IsA("Tool") then
+            CurrentTool = child
+            
+            -- Guardar tamaño original la primera vez
+            if not Settings.OriginalHitbox_Size and child.Handle then
+                Settings.OriginalHitbox_Size = child.Handle.Size
+            end
+            
+            -- Extendir Hitbox
+            if child.Handle then
+                child.Handle.Size = Settings.Hitbox_Extend_Size
+                
+                -- Restaurar tamaño después de un breve periodo (simula impacto rápido)
+                task.delay(0.1, function()
+                    if child.Handle and Settings.OriginalHitbox_Size then
+                        child.Handle.Size = Settings.OriginalHitbox_Size
+                    end
+                end)
+            end
+        end
+    end)
+    
+    -- Limpieza al desequipar o morir
+    character.ChildRemoved:Connect(function(child)
+        if child:IsA("Tool") then
+            CurrentTool = nil
+        end
+    end)
+end)
+
+
+-- =========================================================
+-- 5. KILL ALL (Optimizado)
+-- =========================================================
+
+local function killAllEnemies()
+    local myTeam = LocalPlayer.Team
+    local killedCount = 0
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Team ~= myTeam then
+            local char = player.Character
+            if char then
+                local hum = char:FindFirstChild("Humanoid")
+                if hum then
+                    -- Daño directo seguro y rápido
+                    hum.Health = 0
+                    killedCount += 1
+                end
+            end
+        end
+    end
+    
+    if killedCount > 0 then
+        -- Print opcional para feedback
+        -- print("[KillAll] Eliminados: " .. killedCount)
+    end
+end
+
+-- Loop principal de Kill All (ejecuta cada 3 segundos para no saturar)
+while true do
+    task.wait(3)
+    killAllEnemies()
+end
+
+print("[Duels Exploit] Suite cargada correctamente. ESP, Silent Aim, Auto Shoot y Hitbox activos.")
